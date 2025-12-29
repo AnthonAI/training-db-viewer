@@ -1,0 +1,140 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Agent Training Search</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 900px; margin: 20px auto; padding: 0 12px; }
+    input, button { padding: 8px; margin: 6px 0; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; }
+    .card { border: 1px solid #ddd; border-radius: 8px; padding: 12px; margin-top: 12px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { border-bottom: 1px solid #eee; padding: 8px; text-align: left; }
+    .muted { color: #666; }
+  </style>
+</head>
+<body>
+  <h2>Agent Training Search</h2>
+
+  <div id="authBox" class="card">
+    <h3>Login (staff only)</h3>
+    <div class="row">
+      <input id="loginEmail" type="email" placeholder="email" />
+      <input id="loginPass" type="password" placeholder="password" />
+      <button id="btnLogin">Login</button>
+      <button id="btnLogout" style="display:none;">Logout</button>
+    </div>
+    <div id="authStatus" class="muted"></div>
+  </div>
+
+  <div id="searchBox" class="card" style="display:none;">
+    <h3>Search</h3>
+    <input id="q" placeholder="Search by name or email (e.g. mandy or @kiv.group)" style="width:100%;" />
+    <button id="btnSearch">Search</button>
+    <div id="results"></div>
+  </div>
+
+  <script type="module">
+    import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+    const SUPABASE_URL = "SUPABASE_URL";
+    const SUPABASE_ANON_KEY = "SUPABASE_ANON_KEY";
+    const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    const authStatus = document.getElementById("authStatus");
+    const authBox = document.getElementById("authBox");
+    const searchBox = document.getElementById("searchBox");
+    const btnLogin = document.getElementById("btnLogin");
+    const btnLogout = document.getElementById("btnLogout");
+
+    async function refreshAuthUI() {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
+        authStatus.textContent = `Logged in as ${session.user.email}`;
+        searchBox.style.display = "block";
+        btnLogout.style.display = "inline-block";
+        btnLogin.style.display = "none";
+      } else {
+        authStatus.textContent = "Not logged in.";
+        searchBox.style.display = "none";
+        btnLogout.style.display = "none";
+        btnLogin.style.display = "inline-block";
+      }
+    }
+
+    btnLogin.addEventListener("click", async () => {
+      const email = document.getElementById("loginEmail").value.trim();
+      const password = document.getElementById("loginPass").value;
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) alert(error.message);
+      await refreshAuthUI();
+    });
+
+    btnLogout.addEventListener("click", async () => {
+      await supabase.auth.signOut();
+      await refreshAuthUI();
+    });
+
+    document.getElementById("btnSearch").addEventListener("click", async () => {
+      const q = document.getElementById("q").value.trim();
+      const resultsDiv = document.getElementById("results");
+      resultsDiv.innerHTML = "Searching...";
+
+      // Search agents first
+      const { data: agents, error: e1 } = await supabase
+        .from("agents")
+        .select("agent_id, full_name, email, office, status, role, notes")
+        .or(`full_name.ilike.%${q}%,email.ilike.%${q}%`)
+        .limit(25);
+
+      if (e1) { resultsDiv.innerHTML = `<pre>${e1.message}</pre>`; return; }
+      if (!agents || agents.length === 0) { resultsDiv.innerHTML = "No matches."; return; }
+
+      // Show each agent + their attempts
+      let html = "";
+      for (const a of agents) {
+        const { data: attempts, error: e2 } = await supabase
+          .from("v_agent_attempts")
+          .select("attempt_date, score, passed, time_taken_seconds, training_title, training_version")
+          .eq("agent_id", a.agent_id)
+          .order("attempt_date", { ascending: false })
+          .limit(50);
+
+        if (e2) { html += `<div class="card"><b>${a.full_name}</b><br><pre>${e2.message}</pre></div>`; continue; }
+
+        html += `
+          <div class="card">
+            <b>${a.full_name}</b> <span class="muted">(${a.email})</span><br/>
+            <span class="muted">Office:</span> ${a.office ?? "-"} |
+            <span class="muted">Status:</span> ${a.status ?? "-"} |
+            <span class="muted">Role:</span> ${a.role ?? "-"}<br/>
+            <div class="muted">Notes: ${a.notes ?? "-"}</div>
+
+            <table>
+              <thead><tr>
+                <th>Date</th><th>Training</th><th>Score</th><th>Passed</th><th>Time (min)</th>
+              </tr></thead>
+              <tbody>
+                ${(attempts ?? []).map(x => `
+                  <tr>
+                    <td>${x.attempt_date ?? "-"}</td>
+                    <td>${(x.training_title ?? "-")} ${(x.training_version ? "(" + x.training_version + ")" : "")}</td>
+                    <td>${x.score ?? "-"}</td>
+                    <td>${x.passed ? "Yes" : "No"}</td>
+                    <td>${x.time_taken_seconds ? Math.round(x.time_taken_seconds/60) : "-"}</td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+        `;
+      }
+
+      resultsDiv.innerHTML = html;
+    });
+
+    await refreshAuthUI();
+  </script>
+</body>
+</html>
